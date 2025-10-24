@@ -1,0 +1,6 @@
+Queries (answerable): 333
+Recall@5: 0.589
+MRR: 0.482
+Queries (answerable): 333
+Hybrid Recall@5: 0.700
+Hybrid MRR: 0.561

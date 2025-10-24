@@ -1,0 +1,14 @@
+# Core
+numpy
+pandas
+tqdm
+scikit-learn
+
+# Retrieval
+rank-bm25
+faiss-cpu
+sentence-transformers
+torch
+
+# PPTX ingestion
+python-pptx
