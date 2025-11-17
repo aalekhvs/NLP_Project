@@ -1,0 +1,10 @@
+| Item | Value |
+|---|---|
+| pdf | 936.0 |
+| pptx | 93.0 |
+| html | 3.0 |
+| sections_total | 1057.0 |
+| chunks_total | 1162.0 |
+| chunk_avg_words | 56.4 |
+| chunk_p50_words | 41.0 |
+| chunk_p90_words | 166.9 |
