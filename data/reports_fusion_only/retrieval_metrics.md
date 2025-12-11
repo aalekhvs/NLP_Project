@@ -1,0 +1,16 @@
+| Metric | Value |
+|---|---|
+| Queries (N) | 215 |
+| MRR | 0.3145 |
+| Hit-Rate@1 | 0.214 |
+| AvgRelevant@1 | 0.214 |
+| nDCG@1 | 0.214 |
+| Hit-Rate@3 | 0.3302 |
+| AvgRelevant@3 | 0.3302 |
+| nDCG@3 | 0.2843 |
+| Hit-Rate@5 | 0.4512 |
+| AvgRelevant@5 | 0.4512 |
+| nDCG@5 | 0.3331 |
+| Hit-Rate@10 | 0.5814 |
+| AvgRelevant@10 | 0.5814 |
+| nDCG@10 | 0.3776 |

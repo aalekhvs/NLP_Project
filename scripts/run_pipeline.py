@@ -1,184 +1,119 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run full RAG eval pipeline end-to-end.
-
-Steps:
-  1) ingest -> data/ingested/raw.jsonl
-  2) chunk  -> data/chunks/chunks.jsonl
-  3) index  -> artifacts/tfidf/*
-  4) gold   -> data/eval/questions.jsonl (auto-generated unless --gold_mode=skip)
-  5) retrieve -> data/eval/retrievals.jsonl
-  6) answer   -> data/eval/predictions.jsonl
-  7) evals    -> data/reports/*.csv, *.md
-  8) console summary of key metrics
+One-click pipeline with optional BM25+RRF fusion, cross-encoder rerank, and answer normalization.
 """
-import os, sys, argparse, subprocess, csv
+import argparse, os, subprocess, sys, shlex
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, ".."))
-PY = sys.executable
-
-# Default paths
-PPTX_DIR   = os.path.join(ROOT, "data", "pptx")
-PDF_DIR    = os.path.join(ROOT, "data", "pdfs")
-HTML_DIR   = os.path.join(ROOT, "data", "html")
-DOCX_DIR   = os.path.join(ROOT, "data", "docx")
-
-RAW_JSONL  = os.path.join(ROOT, "data", "ingested", "raw.jsonl")
-CHUNKS     = os.path.join(ROOT, "data", "chunks", "chunks.jsonl")
-INDEX_DIR  = os.path.join(ROOT, "artifacts", "tfidf")
-
-QUESTIONS  = os.path.join(ROOT, "data", "eval", "questions.jsonl")
-RETRIEVALS = os.path.join(ROOT, "data", "eval", "retrievals.jsonl")
-PREDICTS   = os.path.join(ROOT, "data", "eval", "predictions.jsonl")
-
-REPORT_DIR = os.path.join(ROOT, "data", "reports")
-RETR_CSV   = os.path.join(REPORT_DIR, "retrieval_metrics.csv")
-QA_CSV     = os.path.join(REPORT_DIR, "qa_metrics.csv")
-
-def run(cmd, cwd=None):
-    print("$", " ".join(cmd))
-    r = subprocess.run(cmd, cwd=cwd or ROOT)
-    if r.returncode != 0:
-        sys.exit(r.returncode)
-
-def ensure_dirs():
-    for d in [
-        PPTX_DIR, PDF_DIR, HTML_DIR, DOCX_DIR,
-        os.path.dirname(RAW_JSONL),
-        os.path.dirname(CHUNKS),
-        INDEX_DIR,
-        os.path.dirname(QUESTIONS),
-        REPORT_DIR
-    ]:
-        os.makedirs(d, exist_ok=True)
-
-def parse_csv_single_value_table(path):
-    out = {}
-    if not os.path.exists(path):
-        return out
-    with open(path, newline="", encoding="utf-8") as f:
-        rows = list(csv.reader(f))
-    for i in range(1, len(rows)):
-        if len(rows[i]) >= 2:
-            out[rows[i][0]] = rows[i][1]
-    return out
+def sh(cmd):
+    # use the same Python interpreter that launched run_pipeline.py
+    if cmd.strip().startswith("python "):
+        cmd = cmd.replace("python", sys.executable, 1)
+    print("$", cmd)
+    subprocess.run(shlex.split(cmd), check=True)
 
 def main():
-    ap = argparse.ArgumentParser(description="Run full pipeline in one shot.")
-    ap.add_argument("--pptx_dir", default=PPTX_DIR)
-    ap.add_argument("--pdf_dir",  default=PDF_DIR)
-    ap.add_argument("--html_dir", default=HTML_DIR)
-    ap.add_argument("--docx_dir", default=DOCX_DIR)
-
+    ap = argparse.ArgumentParser()
+    # core
+    ap.add_argument("--pptx_dir", default="data/pptx")
+    ap.add_argument("--pdf_dir",  default="data/pdfs")
+    ap.add_argument("--html_dir", default="data/html")
+    ap.add_argument("--docx_dir", default="data/docx")
+    ap.add_argument("--outdir",   default="data")
+    ap.add_argument("--k", type=int, default=15)
+    ap.add_argument("--topN", type=int, default=150)
     ap.add_argument("--chunk_words", type=int, default=180)
     ap.add_argument("--overlap_words", type=int, default=30)
-    ap.add_argument("--k", type=int, default=5)
-    ap.add_argument("--topN", type=int, default=100, help="TF-IDF pool size before rerank")
+    ap.add_argument("--gold_mode", choices=["skip","append","regen"], default="skip")
+    ap.add_argument("--gold_target", type=int, default=0)
 
-    # Gold options
-    ap.add_argument("--gold_mode", choices=["full","append","skip"], default="full",
-                    help="full=rebuild questions.jsonl; append=add up to target; skip=use existing file")
-    ap.add_argument("--gold_target", type=int, default=150)
-    ap.add_argument("--gold_filter_docs", default="", help="Comma-separated doc_id substrings to restrict gold.")
+    # retrieval enhancements
+    ap.add_argument("--use_bm25", action="store_true")
+    ap.add_argument("--use_rrf", action="store_true")
+    ap.add_argument("--rrf_K", type=int, default=60)
+    ap.add_argument("--category_filter", choices=["none","soft","hard"], default="none")
+    ap.add_argument("--category_boost", type=float, default=0.2)
+    ap.add_argument("--head_weight", type=float, default=0.0, help="boost score for chunks with heading-like sections")
+
+    # reranker + normalization
+    ap.add_argument("--rerank_ce", action="store_true", help="apply cross-encoder rerank")
+    ap.add_argument("--ce_model", default="cross-encoder/ms-marco-MiniLM-L-6-v2")
+    ap.add_argument("--normalize_answers", action="store_true", help="normalize EM/F1 evaluation")
 
     args = ap.parse_args()
-    ensure_dirs()
 
-    # 1) Ingest
-    run([PY, "scripts/ingest_docs.py",
-         "--pptx_dir", args.pptx_dir,
-         "--pdf_dir",  args.pdf_dir,
-         "--html_dir", args.html_dir,
-         "--docx_dir", args.docx_dir,
-         "--out_jsonl", RAW_JSONL])
+    data = args.outdir
+    raw = os.path.join(data, "ingested/raw.jsonl")
+    chunks = os.path.join(data, "chunks/chunks.jsonl")
+    index_dir = "artifacts/tfidf"
+    questions = os.path.join(data, "eval/questions.jsonl")
+    retrievals = os.path.join(data, "eval/retrievals.jsonl")
+    retrievals_rer = os.path.join(data, "eval/retrievals_reranked.jsonl")
+    predictions = os.path.join(data, "eval/predictions.jsonl")
+    reports = os.path.join(data, "reports")
 
-    # 2) Chunk
-    run([PY, "scripts/chunk_docs.py",
-         "--in_jsonl", RAW_JSONL,
-         "--out_jsonl", CHUNKS,
-         "--chunk_words", str(args.chunk_words),
-         "--overlap_words", str(args.overlap_words)])
+    os.makedirs(os.path.join(data, "ingested"), exist_ok=True)
+    os.makedirs(os.path.join(data, "chunks"), exist_ok=True)
+    os.makedirs(os.path.join(data, "eval"), exist_ok=True)
+    os.makedirs(reports, exist_ok=True)
+    os.makedirs(index_dir, exist_ok=True)
 
-    # 3) Index (TF-IDF)
-    run([PY, "scripts/build_indices.py",
-         "--chunks_jsonl", CHUNKS,
-         "--index_dir", INDEX_DIR])
+    # 1) ingest
+    sh(f"python scripts/ingest_docs.py --pptx_dir {args.pptx_dir} --pdf_dir {args.pdf_dir} "
+       f"--html_dir {args.html_dir} --docx_dir {args.docx_dir} --out_jsonl {raw}")
 
-    # 4) Gold
+    # 2) chunk
+    sh(f"python scripts/chunk_docs.py --in_jsonl {raw} --out_jsonl {chunks} "
+       f"--chunk_words {args.chunk_words} --overlap_words {args.overlap_words}")
+
+    # 3) index
+    sh(f"python scripts/build_indices.py --chunks_jsonl {chunks} --index_dir {index_dir}")
+
+    # 4) gold (optional)
     if args.gold_mode != "skip":
-        filter_docs = args.gold_filter_docs.strip()
-        cmd = [PY, "scripts/make_gold_plus.py",
-               "--chunks", CHUNKS,
-               "--out", QUESTIONS,
-               "--target", str(args.gold_target)]
-        if filter_docs:
-            cmd += ["--filter_docs", filter_docs]
-        if args.gold_mode == "append" and os.path.exists(QUESTIONS):
-            cmd += ["--append", "--existing", QUESTIONS]
-        run(cmd)
-    else:
-        if not os.path.exists(QUESTIONS):
-            print("questions.jsonl not found and --gold_mode=skip. Exiting.")
-            sys.exit(2)
+        if args.gold_mode == "regen":
+            sh(f"python scripts/make_gold_plus.py --chunks {chunks} --out {questions} --target {args.gold_target}")
+        elif args.gold_mode == "append":
+            sh(f"python scripts/make_gold_plus.py --chunks {chunks} --out {questions} --target {args.gold_target} "
+               f"--append --existing {questions}")
 
-    # 5) Retrieve (passes topN to reranker)
-    run([PY, "scripts/retrieve_tfidf.py",
-         "--index_dir", INDEX_DIR,
-         "--chunks_jsonl", CHUNKS,
-         "--questions", QUESTIONS,
-         "--k", str(args.k),
-         "--topN", str(args.topN),
-         "--out", RETRIEVALS])
+    # 5) retrieve (TF–IDF + optional BM25/RRF + category filtering + heading boost)
+    retrieve_cmd = (
+        f"python scripts/retrieve_tfidf.py --index_dir {index_dir} --chunks_jsonl {chunks} "
+        f"--questions {questions} --k {args.k} --topN {args.topN} "
+        f"--category_filter {args.category_filter} --category_boost {args.category_boost} "
+        f"--head_weight {args.head_weight} "
+        f"--out {retrievals}"
+    )
+    if args.use_bm25: retrieve_cmd += " --use_bm25"
+    if args.use_rrf:  retrieve_cmd += " --use_rrf --rrf_K " + str(args.rrf_K)
+    sh(retrieve_cmd)
 
-    # 6) Answer (extractive)
-    run([PY, "scripts/answer_extractive.py",
-         "--chunks_jsonl", CHUNKS,
-         "--retrievals", RETRIEVALS,
-         "--out", PREDICTS])
+    # 6) optional rerank
+    retr_for_answer = retrievals
+    if args.rerank_ce:
+        sh(f"python scripts/rerank_crossencoder.py --chunks_jsonl {chunks} "
+           f"--retrievals_in {retrievals} --retrievals_out {retrievals_rer} --model {args.ce_model}")
+        retr_for_answer = retrievals_rer
 
-    # 7) Evals
-    run([PY, "scripts/eval_retrieval.py",
-         "--retrievals", RETRIEVALS,
-         "--questions", QUESTIONS,
-         "--out_dir", REPORT_DIR])
+    # 7) answer extraction
+    sh(f"python scripts/answer_extractive.py --chunks_jsonl {chunks} \
+  --retrievals {retr_for_answer} --out {predictions} --use_hits 1")
 
-    run([PY, "scripts/eval_qa.py",
-         "--predictions", PREDICTS,
-         "--questions", QUESTIONS,
-         "--out_dir", REPORT_DIR])
+    # 8) metrics
+    sh(f"python scripts/eval_retrieval.py --retrievals {retr_for_answer} --questions {questions} --out_dir {reports}")
+    qa_cmd = f"python scripts/eval_qa.py --predictions {predictions} --questions {questions} --out_dir {reports}"
+    if args.normalize_answers: qa_cmd += " --normalize"
+    sh(qa_cmd)
 
-    run([PY, "scripts/report_tables.py",
-         "--raw", RAW_JSONL,
-         "--chunks", CHUNKS,
-         "--retrievals", RETRIEVALS,
-         "--retrieval_report", RETR_CSV,
-         "--qa_report", QA_CSV,
-         "--out_dir", REPORT_DIR])
+    # 9) tables
+    sh(f"python scripts/report_tables.py --raw {raw} --chunks {chunks} "
+       f"--retrievals {retr_for_answer} "
+       f"--retrieval_report {os.path.join(reports,'retrieval_metrics.csv')} "
+       f"--qa_report {os.path.join(reports,'qa_metrics.csv')} --out_dir {reports}")
 
-    # 8) Print short summary
-    retr = parse_csv_single_value_table(RETR_CSV)
-    qa   = parse_csv_single_value_table(QA_CSV)
-
-    print("\n=== SUMMARY ===")
-    if retr:
-        print(f"Queries (N): {retr.get('Queries (N)','?')}")
-        print(f"MRR:         {retr.get('MRR','?')}")
-        print(f"Hit@1/3/5:   {retr.get('Hit-Rate@1','?')}  / {retr.get('Hit-Rate@3','?')}  / {retr.get('Hit-Rate@5','?')}")
-        print(f"nDCG@1/3/5:  {retr.get('nDCG@1','?')}  / {retr.get('nDCG@3','?')}  / {retr.get('nDCG@5','?')}")
-    else:
-        print("Retrieval metrics not found.")
-
-    if qa:
-        print(f"Questions (N): {qa.get('Questions (N)','?')}")
-        print(f"ExactMatch:    {qa.get('ExactMatch','?')}")
-        print(f"F1:            {qa.get('F1','?')}")
-    else:
-        print("QA metrics not found.")
-
-    print(f"\nReports saved to: {REPORT_DIR}")
-    print("Done.")
+    print("\n=== Done ===")
+    print(f"Reports -> {reports}")
 
 if __name__ == "__main__":
     main()
