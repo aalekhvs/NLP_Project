@@ -1,79 +1,79 @@
 #!/usr/bin/env python3
-import argparse, ujson as json, re, string, csv, os
+# -*- coding: utf-8 -*-
+"""
+Compute EM/F1 over predictions vs gold. Optional normalization.
+"""
+import argparse, json, os, re, math, pandas as pd
+from collections import Counter
 
-def normalize(s):
-    s = s.lower().strip()
-    s = re.sub(r"\b(a|an|the)\b", " ", s)
-    s = s.translate(str.maketrans("", "", string.punctuation))
-    s = re.sub(r"\s+"," ", s).strip()
+def iter_jsonl(p):
+    with open(p,"r",encoding="utf-8") as f:
+        for ln in f:
+            if ln.strip():
+                yield json.loads(ln)
+
+def normalize(s):  # default basic
+    s = s or ""
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def f1_score(pred, truth):
-    p = normalize(pred).split()
-    t = normalize(truth).split()
-    if not p and not t: return 1.0
-    if not p or not t: return 0.0
-    common = 0
-    d = {}
-    for tok in t: d[tok] = d.get(tok,0)+1
-    for tok in p:
-        if d.get(tok,0)>0:
-            common += 1
-            d[tok] -= 1
-    if common == 0: return 0.0
-    prec = common / len(p)
-    rec  = common / len(t)
-    return 2 * prec * rec / (prec + rec)
+def norm_eval_text(s, use_norm):
+    s = normalize(s)
+    if use_norm:
+        try:
+            from answer_normalize import normalize_for_eval
+            s = normalize_for_eval(s)
+        except Exception:
+            pass
+    return s
 
-def exact_match(pred, truth):
-    return 1.0 if normalize(pred) == normalize(truth) else 0.0
+def f1_score(pred, gold):
+    pred_toks = pred.split()
+    gold_toks = gold.split()
+    common = Counter(pred_toks) & Counter(gold_toks)
+    num_same = sum(common.values())
+    if len(pred_toks)==0 or len(gold_toks)==0:
+        return float(pred_toks==gold_toks)
+    if num_same==0:
+        return 0.0
+    precision = 1.0 * num_same / len(pred_toks)
+    recall = 1.0 * num_same / len(gold_toks)
+    return 2 * precision * recall / (precision + recall)
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--predictions", required=True)
     ap.add_argument("--questions", required=True)
     ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--normalize", action="store_true", help="normalize pred/gold for EM/F1")
     args = ap.parse_args()
+
+    gold = {q["qid"]: q for q in iter_jsonl(args.questions)}
+    em = f1 = n = 0.0
+
+    for p in iter_jsonl(args.predictions):
+        qid = p["qid"]
+        if qid not in gold: continue
+        pred = norm_eval_text(p.get("answer",""), args.normalize)
+        g = norm_eval_text(gold[qid].get("answer",""), args.normalize)
+        n += 1
+        em += 1.0 if pred == g else 0.0
+        f1 += f1_score(pred, g)
+
+    em = (em / n) if n else 0.0
+    f1 = (f1 / n) if n else 0.0
+
     os.makedirs(args.out_dir, exist_ok=True)
-
-    gold = {}
-    with open(args.questions,"r",encoding="utf-8") as f:
-        for line in f:
-            if not line.strip(): continue
-            q = json.loads(line)
-            if q.get("answer"):
-                gold[q["qid"]] = q["answer"]
-            elif q.get("answers"):
-                gold[q["qid"]] = q["answers"][0]
-
-    N=0; em=0.0; f1=0.0
-    with open(args.predictions,"r",encoding="utf-8") as f:
-        for line in f:
-            if not line.strip(): continue
-            p = json.loads(line)
-            qid = p["qid"]; pred = p.get("prediction","")
-            truth = gold.get(qid, "")
-            if truth == "": continue
-            N+=1
-            em += exact_match(pred, truth)
-            f1 += f1_score(pred, truth)
-
-    em = (em / N) if N else 0.0
-    f1 = (f1 / N) if N else 0.0
-
-    out_csv = os.path.join(args.out_dir,"qa_metrics.csv")
-    with open(out_csv, "w", newline="", encoding="utf-8") as w:
-        writer = csv.writer(w); writer.writerow(["Metric","Value"])
-        writer.writerow(["Questions (N)", N])
-        writer.writerow(["ExactMatch", round(em,4)])
-        writer.writerow(["F1", round(f1,4)])
-
-    with open(os.path.join(args.out_dir,"qa_metrics.md"),"w",encoding="utf-8") as w:
-        w.write("| Metric | Value |\n|---|---|\n")
-        w.write(f"| Questions (N) | {N} |\n")
-        w.write(f"| ExactMatch | {round(em,4)} |\n")
-        w.write(f"| F1 | {round(f1,4)} |\n")
-    print(f"QA metrics -> {out_csv}")
+    df = pd.DataFrame([["Questions (N)", int(n)],
+                       ["ExactMatch", round(em, 4)],
+                       ["F1", round(f1, 4)]],
+                      columns=["Metric","Value"])
+    df.to_csv(os.path.join(args.out_dir, "qa_metrics.csv"), index=False)
+    with open(os.path.join(args.out_dir, "qa_metrics.md"), "w", encoding="utf-8") as f:
+        f.write("# QA Metrics\n\n")
+        for m,v in df.values:
+            f.write(f"- **{m}**: {v}\n")
+    print(f"QA metrics -> {os.path.join(args.out_dir, 'qa_metrics.csv')}")
 
 if __name__ == "__main__":
     main()

@@ -19,19 +19,19 @@
 | Metric | Value |
 |---|---|
 | Queries (N) | 215.0 |
-| MRR | 0.3022 |
-| Hit-Rate@1 | 0.214 |
-| AvgRelevant@1 | 0.214 |
-| nDCG@1 | 0.214 |
-| Hit-Rate@3 | 0.3488 |
-| AvgRelevant@3 | 0.3488 |
-| nDCG@3 | 0.293 |
-| Hit-Rate@5 | 0.4279 |
-| AvgRelevant@5 | 0.4279 |
-| nDCG@5 | 0.3248 |
-| Hit-Rate@10 | 0.5163 |
-| AvgRelevant@10 | 0.5163 |
-| nDCG@10 | 0.353 |
+| MRR | 0.4319 |
+| Hit-Rate@1 | 0.3349 |
+| AvgRelevant@1 | 0.3349 |
+| nDCG@1 | 0.3349 |
+| Hit-Rate@3 | 0.4837 |
+| AvgRelevant@3 | 0.4837 |
+| nDCG@3 | 0.4215 |
+| Hit-Rate@5 | 0.5721 |
+| AvgRelevant@5 | 0.5721 |
+| nDCG@5 | 0.4577 |
+| Hit-Rate@10 | 0.6605 |
+| AvgRelevant@10 | 0.6605 |
+| nDCG@10 | 0.4864 |
 
 
 ## QA Metrics
@@ -39,5 +39,5 @@
 | Metric | Value |
 |---|---|
 | Questions (N) | 215.0 |
-| ExactMatch | 0.0884 |
-| F1 | 0.2532 |
+| ExactMatch | 0.0 |
+| F1 | 0.0 |

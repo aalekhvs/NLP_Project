@@ -1,5 +1,5 @@
-| Metric | Value |
-|---|---|
-| Questions (N) | 215 |
-| ExactMatch | 0.0884 |
-| F1 | 0.2532 |
+# QA Metrics
+
+- **Questions (N)**: 215.0
+- **ExactMatch**: 0.3256
+- **F1**: 0.4451
